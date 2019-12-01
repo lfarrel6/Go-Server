@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Daily Dashboard</title>
+</head>
+<body>
+	<button onclick="getWeather()">weather</button>
+	<button onclick="getNews()">news</button>
+	<button onclick="getBus()">bus</button>
+
+	<script type="text/javascript">
+		async function getWeather(){
+			const weather = await fetch("http://localhost:8080/weather")
+			console.log(await weather.json());
+		}
+
+		async function getNews(){
+			const news = await fetch("http://localhost:8080/news")
+			console.log(await news.json())
+		}
+
+		async function getBus(){
+			const bus = await fetch("http://localhost:8080/bus")
+			console.log(await bus.json());
+		}
+	</script>
+</body>
+</html>

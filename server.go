@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"encoding/json"
 	"log"
+	"os"
 )
 
 //article struct allowing for unmarshalling
@@ -22,8 +23,78 @@ type Article struct {
 	Url string `json:"url"`
 }
 
+type temperature struct {
+  Value float64
+  Unit string
+}
+
+type weather struct {
+  DateTime, IconPhrase string
+  Temperature temperature
+  PrecipitationProbability int
+}
+
+type stopRTPI struct {
+	ErrorCode string `json:"errorcode"`
+	ErrorMessage string `json:"errormessage"`
+	ResultCount int `json:"numberofresults"`
+	StopId string `json:"stopid"`
+	Time string `json:timestamp`
+	Results []bus `json:results`
+}
+
+type bus struct {
+	Eta string `json:"arrivaldatetime"`
+	DueMinutes string `json:"duetime"`
+	ScheduledArrival string `json:"scheduledarrivaldatetime"`
+	Destination string `json:"destination"`
+	Origin string `json:"origin"`
+}
+
+type Server struct {
+	WeatherLocation int `json:"weatherLocation"`
+	StoriesCount int `json:"storiesCount"`
+	BusStops []int `json:"busStops"`
+}
+
+func buildServer() Server {
+	config, err := os.Open("config.json")
+
+	if err != nil {
+		log.Fatal(err)
+	}
+	
+	defer config.Close()
+	content, read_err := ioutil.ReadAll(config)
+	
+	if read_err != nil {
+		log.Fatal(read_err)
+	}
+
+	server := Server{}
+	json_err := json.Unmarshal(content,&server)
+
+	if json_err != nil {
+		log.Fatal(json_err)
+	}
+
+	return server
+}
+
+func (server Server) runServer() {
+	file_server := http.FileServer(http.Dir("pages/"))
+	http.Handle("/", http.StripPrefix("/",file_server))
+
+	http.HandleFunc("/news", server.getNews)
+	http.HandleFunc("/weather", server.getWeather)
+	http.HandleFunc("/bus", server.getBuses)
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+    	panic(err)
+	}
+}
+
 //Get top stories from hacker-news api
-func getNews(w http.ResponseWriter, r *http.Request) {
+func (server Server) getNews(w http.ResponseWriter, r *http.Request) {
   resp, err := http.Get("https://hacker-news.firebaseio.com/v0/topstories.json")
 
   if err == nil {
@@ -33,27 +104,29 @@ func getNews(w http.ResponseWriter, r *http.Request) {
   	if read_err == nil {
 
   		var arr []int
-  		_ = json.Unmarshal([]byte(body), &arr)
+  		_ = json.Unmarshal(body, &arr)
 
-  		jobs := make(chan int, 10)
-  		results := make(chan string, 10)
+  		articles := make([]Article, server.StoriesCount)
+
+  		jobs := make(chan int, server.StoriesCount)
+  		results := make(chan Article, server.StoriesCount)
 
   		//allow article retrieval be executed as two goroutines
   		go getArticle(jobs, results)
   		go getArticle(jobs, results)
 
-  		for i := 0; i < 10; i++ {
+  		for i := 0; i < server.StoriesCount; i++ {
   			jobs <- arr[i]
   		}
   		close(jobs)
 
-  		w.Header().Set("Content-Type", "text/html")
-  		fmt.Fprintf(w,"<h1>Hacker News</h1>")
+  		w.Header().Set("Content-Type", "application/json")
 
-  		for j := 0; j < 10; j++ {
+  		for j := 0; j < server.StoriesCount; j++ {
   			article_markdown := <- results
-  			fmt.Fprintf(w,"<p>%s</p>",article_markdown)
+  			articles[j] = article_markdown
   		}
+  		json.NewEncoder(w).Encode(articles)
 
   	} else {
   		w.Write([]byte("Error retrieving stories"))
@@ -66,10 +139,9 @@ func getNews(w http.ResponseWriter, r *http.Request) {
 }
 
 //Take article ids from job list, push html into results channel
-func getArticle(jobs <-chan int, results chan<- string){
+func getArticle(jobs <-chan int, results chan<- Article){
 	for id := range jobs {
-		article := makeArticleReq(id)
-		results <- generateHTML(article)
+		results <- makeArticleReq(id)
 	}
 }
 
@@ -87,12 +159,11 @@ func makeArticleReq(id int) Article {
 
 		if read_err == nil {
 			article := Article{}
-			e := json.Unmarshal([]byte(body),&article)
+			e := json.Unmarshal(body,&article)
 
 			if e != nil {
 				log.Fatal(e)
 			}
-			//show(article)
 			return article
 		}
 	}
@@ -112,18 +183,114 @@ func generateHTML(article Article) string {
 	)
 }
 
-func show(x Article) {
-	fmt.Printf("#%d \t %s \t By: %s \n",
-		x.Id,
-		x.Title,
-		x.By,
-	)
+func getAccuweatherKey() string{
+	keyFile, err := os.Open("accuweather-key.txt")
+
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer keyFile.Close()
+
+	bytes, err := ioutil.ReadAll(keyFile)
+	str_key := string(bytes[:])
+	return str_key
 }
 
+func formatHour(h weather) string {
+  hour := h.DateTime[11:16]
+  return fmt.Sprintf("%s \t %s \t %.1f%s \t %d%%\n",
+    hour,
+    h.IconPhrase,
+    h.Temperature.Value,
+    h.Temperature.Unit,
+    h.PrecipitationProbability,
+  )
+}
+
+func (server Server) getWeather(w http.ResponseWriter, r *http.Request) {
+	apiKey := getAccuweatherKey()
+
+	weather_url := fmt.Sprintf("http://dataservice.accuweather.com/forecasts/v1/hourly/12hour/%d", server.WeatherLocation)
+
+	req, req_err := http.NewRequest(
+		"GET",
+		weather_url,
+		nil,
+	)
+	if req_err != nil{
+		log.Fatal(req_err)
+	}
+
+	queries := req.URL.Query()
+	queries.Add("apikey",apiKey)
+	queries.Add("metric","true")
+	queries.Add("details","true")
+
+	req.URL.RawQuery = queries.Encode()
+
+	resp, err := http.Get(req.URL.String())
+
+	if err != nil{
+		log.Fatal("Error retrieving weather")
+	}
+
+	defer resp.Body.Close()
+	body, read_err := ioutil.ReadAll(resp.Body)
+
+	if read_err != nil{
+		log.Fatal("Error reading body")
+	}
+
+	var hours []weather
+
+	e := json.Unmarshal(body, &hours)
+	if e != nil {
+		log.Fatal(e)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(hours)
+}
+
+func getBusRTPIUrl(stop int) string {
+	return fmt.Sprintf("https://data.smartdublin.ie/cgi-bin/rtpi/realtimebusinformation?stopid=%d", stop)
+}
+
+func (server Server) getBuses(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	length := len(server.BusStops)
+	payload := make([]stopRTPI,length)
+
+	for i := 0; i < length; i++ {
+		stop_num := server.BusStops[i]
+		req_url := getBusRTPIUrl(stop_num)
+
+		resp, resp_err := http.Get(req_url)
+
+		if resp_err != nil {
+			log.Fatal(resp_err)
+		}
+
+		defer resp.Body.Close()
+		body, read_err := ioutil.ReadAll(resp.Body)
+
+		if read_err != nil {
+			log.Fatal(read_err)
+		}
+
+		rtpi := stopRTPI{}
+		json_err := json.Unmarshal(body, &rtpi)
+
+		if json_err != nil {
+			log.Fatal(json_err)
+		}
+
+		payload[i] = rtpi
+	}	
+	json.NewEncoder(w).Encode(payload)
+}
 
 func main() {
-  http.HandleFunc("/", getNews)
-  if err := http.ListenAndServe(":8080", nil); err != nil {
-    panic(err)
-  }
+  server := buildServer()
+  server.runServer()
 }
