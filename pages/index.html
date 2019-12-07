@@ -2,26 +2,89 @@
 <html>
 <head>
 	<title>Daily Dashboard</title>
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<link rel="stylesheet" type="text/css" href="style.css">
+	<link href="https://fonts.googleapis.com/css?family=Open+Sans:700|Gupter&display=swap" rel="stylesheet">
 </head>
 <body>
-	<button onclick="getWeather()">weather</button>
-	<button onclick="getNews()">news</button>
-	<button onclick="getBus()">bus</button>
+	<!-- <div class="sun"></div> -->
+	<div class="root">
+		<section class="title-holder">
+			<h1 class="title">Daily Dashboard</h1>
+		</section>
+		<main class="container">
+			<article class="weather info-holder">
+				<h1>weather</h1>
+				<table>
+					<tr class="info-list" id="weather-listing"></tr>
+				</table>
+			</article>
+			<article class="bus info-holder">
+				<h1>bus</h1>
+				<table>
+					<tr class="info-list" id="bus-listing"></tr>
+				</table>	
+			</article>
+			<article class="news info-holder">
+				<h1>news</h1>
+				<table>
+					<tr class="info-list" id="news-listing"></tr>
+				</table>
+			</article>
+		</main>
+	</div>
 
 	<script type="text/javascript">
+		const onLoadFn = () => {
+			getWeather();
+			getNews();
+			getBus();
+		}
+		window.onload = onLoadFn;
+		document.onload = onLoadFn;
+
+		async function makeReq(url){
+			return (await fetch(url)).json();
+		}
+
 		async function getWeather(){
-			const weather = await fetch("http://localhost:8080/weather")
-			console.log(await weather.json());
+			const htmlify = ({DateTime, IconPhrase, Temperature, PrecipitationProbability}) => {
+				const dateString = new Date(DateTime).toDateString()
+				return `<p>${dateString.substring(0,dateString.length-4)}</p><p>${IconPhrase}</p><p>${Temperature.Value}${Temperature.Unit}</p><p>${PrecipitationProbability}%</p>`;
+			}
+			
+			makeReq("http://localhost:8080/weather")
+				.then(render("weather-listing",htmlify))
+				.catch(err => console.error(err))
 		}
 
 		async function getNews(){
-			const news = await fetch("http://localhost:8080/news")
-			console.log(await news.json())
+			const htmlify = ({by, descendants, id, score, time, title, text, type, url}) => {
+				return `<p><a href='${url}'>${title}</a></p><p>#${id} by ${by}</p><p>${text}</p>`;
+			}
+
+			makeReq("http://localhost:8080/news")
+				.then(render("news-listing",htmlify))
+				.catch(err => console.error(err))
 		}
 
 		async function getBus(){
-			const bus = await fetch("http://localhost:8080/bus")
-			console.log(await bus.json());
+			const htmlify = ({errorcode, errormessage, numberofresults, stopid, Time, Results}) => {
+				return `<p>Stop #${stopid}</p><p>${numberofresults} buses coming</p>`;
+			}
+
+			makeReq("http://localhost:8080/bus")
+				.then(render("bus-listing",htmlify))
+				.catch(err => console.error(err))
+		}
+
+		const render = (id,htmlify) => (payload) => {
+			const root = document.getElementById(id);
+			payload.forEach(x => {
+				const listElem = document.createElement("td");
+				listElem.innerHTML = htmlify(x);
+				root.appendChild(listElem);
+			});
 		}
 	</script>
 </body>
